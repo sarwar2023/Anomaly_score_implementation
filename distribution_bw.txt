@@ -1,0 +1,271 @@
+import pandas as pd
+import numpy as np
+import seaborn as sns
+sns.set_style("white")
+sns.set()
+# %matplotlib notebook
+from matplotlib.patches import Patch
+from matplotlib.lines import Line2D
+import matplotlib.patches as mpatches
+
+# script constants
+patient_file_name = r'E:/patient_with_class.xls'
+geneset_file_name = r'E:/C5_MF_geneset.xls'
+
+
+def load_genesets():
+    """
+    Load the geneset data and return a dict which maps each gene id to a set of geneset indexes.
+    Geneset indexes range from 0 to the number of genesets - 1.
+    We do not assume that a gene appears in only one geneset.
+    :returns: num_of_genesets, geneset_map.
+    """
+    geneset_df = pd.read_excel(geneset_file_name)
+    geneset_map = {}
+    for geneset_index, row in geneset_df.iterrows():
+        it = iter(row)
+        next(it)  # The first column is the geneset_id which we ignore - just use the index instead
+        for gene_id in it:
+            if isinstance(gene_id, str):
+                try:
+                    geneset_map[gene_id].add(geneset_index)
+                except KeyError:
+                    geneset_map[gene_id] = {geneset_index}
+    return geneset_df.shape[0], geneset_map
+
+
+def load_dataset():
+    """
+    Load the patient gene expression dataset.
+    Rows are patients.
+    Columns are genes (with expression values), except the the last column
+    which is the target attribute
+    :returns: a DataFrame.
+    """
+    # The data is stored in the excel file transposed.
+    patient_data = pd.read_excel(patient_file_name, index_col=0).transpose()
+    index_name = patient_data.index
+    return index_name, patient_data
+
+
+class Class_anomalies(object):
+
+    def __init__(self, num_of_genesets, geneset_map):
+        self.num_of_genesets = num_of_genesets
+        self.geneset_map = geneset_map
+        self.mean = None
+        self.std = None
+
+    def _anomaly_scores(self, train_data, target_values):
+        """
+        Given a DataFrame of expression values, with column names that are gene ids,
+        return a numpy array of anomaly scores.
+        Rows are patients, columns are genesets.
+
+        This assumes 'self.fit' has been called to set 'self.mean' and 'self.std'.
+        """
+        self.mean = train_data.mean()
+        self.std = train_data.std()
+        num_patients = train_data.shape[0]
+        z_scores = abs(train_data - self.mean) / self.std
+        gene_ids = train_data.columns
+
+        # Create a matrix of anomaly scores.
+        anomalies = np.zeros((num_patients, self.num_of_genesets), dtype=np.float)
+        for patient_index, (patient, row) in enumerate(z_scores.iterrows()):
+            counts = np.zeros(self.num_of_genesets, dtype=np.int)
+            for gene_id, z_score in zip(gene_ids, row):
+                for geneset_index in self.geneset_map.get(gene_id, ()):
+                    anomalies[patient_index, geneset_index] += z_score
+                    counts[geneset_index] += 1
+            for geneset_index in range(self.num_of_genesets):
+                count = counts[geneset_index]
+                if count > 0:
+                    anomalies[patient_index, geneset_index] /= count
+        #anomalies = (anomalies - anomalies.mean())
+        return anomalies
+
+
+def pre_process(class_anomalies, data):
+    # Create a frame of training data (excluding row i from data)
+    train_data = data
+    # Train our classifier
+    target_values = train_data.iloc[:, -1].values
+    train_data = train_data.drop(train_data.columns[-1], axis=1)
+    anomaly_score = class_anomalies._anomaly_scores(train_data, target_values)
+    return anomaly_score
+def relapse_distribuation(input_abn,df_rinput):
+    relapse=[]
+    for i in range(len(input_abn)):
+        if (df_rinput.iloc[i][1] == 'Yes'):
+            relapse.append(input_abn.iloc[i, :])   # assign only relapse patients
+    relapse=pd.DataFrame(relapse)
+    data = relapse.transpose()
+    print(data)
+    import matplotlib.pyplot as plt
+    sns.set_style("white")
+    plt.figure(figsize=(8, 8))
+    plt.xlim([0.0,2.0])
+    sns.distplot(data,bins=100,kde=False,color="black");
+    plt.xlabel('Anomaly score of gene sets', fontsize=16);
+    plt.ylabel('Frequency of anomaly score', fontsize=16);
+    plt.legend()
+    plt.savefig('E:/relapse.png', format='png', dpi=1200)
+    plt.show()
+def non_relapse_distribuation(input_abn,df_rinput):
+    non_relapse=[]
+    for i in range(len(input_abn)):
+        if (df_rinput.iloc[i][1] == 'No'):
+            non_relapse.append(input_abn.iloc[i, :]) # assign non relapse patients
+    non_relapse=pd.DataFrame(non_relapse)
+    data = non_relapse.transpose()
+    print(data)
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(8, 8))
+    plt.xlim([0.0,2.0])
+    sns.distplot(data,bins=100,kde=False,color="black");
+    plt.xlabel('Anomaly score of gene sets', fontsize=16);
+    plt.ylabel('Frequency of anomaly score', fontsize=16);
+    plt.legend()
+    plt.savefig('E:/non_relapse.png', format='png', dpi=1200)
+    plt.show()
+
+def high_relapse_distribuation(input_abn, df_risk, df_rinput):
+
+    High_relapse = []
+    for i in range(len(input_abn)):
+        if ((df_risk.iloc[i][1] == 'High') or (df_risk.iloc[i][1] == 'Very High')):
+            if (df_rinput.iloc[i][1] == 'Yes'):
+                High_relapse.append(input_abn.iloc[i, :])  # assign only high patients
+    High_relapse = pd.DataFrame(High_relapse)
+    data = High_relapse.transpose()
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(8, 8))
+    plt.xlim([0.0, 2.0])
+    sns.distplot(data, bins=100, kde=False,color="black");
+    plt.xlabel('Anomaly score of gene sets', fontsize=16);
+    plt.ylabel('Frequency of anomaly score', fontsize=16);
+    plt.legend()
+    plt.savefig('E:/high_relapse.png', format='png', dpi=1200)
+    plt.show()
+def high_non_relapse_distribuation(input_abn, df_risk, df_rinput):
+
+    High_non_relapse = []
+    for i in range(len(input_abn)):
+        if ((df_risk.iloc[i][1] == 'High') or (df_risk.iloc[i][1] == 'Very High')):
+            if (df_rinput.iloc[i][1] == 'No'):
+                High_non_relapse.append(input_abn.iloc[i, :])  # assign only high patients
+    High_non_relapse = pd.DataFrame(High_non_relapse)
+    data = High_non_relapse.transpose()
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(8, 8))
+    plt.xlim([0.0, 2.0])
+    sns.distplot(data, bins=100, kde=False,color="black");
+    plt.xlabel('Anomaly score of gene sets', fontsize=16);
+    plt.ylabel('Frequency of anomaly score', fontsize=16);
+    plt.legend()
+    plt.savefig('E:/high_non_relapse.png', format='png', dpi=1200)
+    plt.show()
+def standard_relapse_distribuation(input_abn, df_risk, df_rinput):
+
+    standard_relapse = []
+    for i in range(len(input_abn)):
+        if ((df_risk.iloc[i][1] == 'Standard')):
+            if (df_rinput.iloc[i][1] == 'Yes'):
+                standard_relapse.append(input_abn.iloc[i, :])  # assign only high patients
+    standard_relapse = pd.DataFrame(standard_relapse)
+    data = standard_relapse.transpose()
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(8, 8))
+    plt.xlim([0.0, 2.0])
+    sns.distplot(data, bins=100, kde=False,color="black");
+    plt.xlabel('Anomaly score of gene sets', fontsize=16);
+    plt.ylabel('Frequency of anomaly score', fontsize=16);
+    plt.legend()
+    plt.savefig('E:/standard_relapse.png', format='png', dpi=1200)
+    plt.show()
+
+def standard_non_relapse_distribuation(input_abn, df_risk, df_rinput):
+
+    standard_non_relapse= []
+    for i in range(len(input_abn)):
+        if ((df_risk.iloc[i][1] == 'Standard')):
+            if (df_rinput.iloc[i][1] == 'No'):
+                standard_non_relapse .append(input_abn.iloc[i, :])  # assign only high patients
+    standard_non_relapse = pd.DataFrame(standard_non_relapse )
+    data = standard_non_relapse .transpose()
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(8, 8))
+    plt.xlim([0.0, 2.0])
+    sns.distplot(data, bins=100, kde=False,color="black");
+    plt.xlabel('Anomaly score of gene sets', fontsize=16);
+    plt.ylabel('Frequency of anomaly score', fontsize=16);
+    plt.legend()
+    plt.savefig('E:/standard_non_relapse.png', format='png', dpi=1200)
+    plt.show()
+def medium_relapse_distribuation(input_abn, df_risk, df_rinput):
+
+    medium_relapse= []
+    for i in range(len(input_abn)):
+        if ((df_risk.iloc[i][1] == 'Medium')):
+            if (df_rinput.iloc[i][1] == 'Yes'):
+                medium_relapse .append(input_abn.iloc[i, :])  # assign only high patients
+    medium_relapse = pd.DataFrame(medium_relapse )
+    data = medium_relapse .transpose()
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(8, 8))
+    plt.xlim([0.0, 2.0])
+    sns.distplot(data, bins=100, kde=False,color="black");
+    plt.xlabel('Anomaly score of gene sets', fontsize=16);
+    plt.ylabel('Frequency of anomaly score', fontsize=16);
+    plt.legend()
+    plt.savefig('E:/medium_relapse.png', format='png', dpi=1200)
+    plt.show()
+def medium_non_relapse_distribuation(input_abn, df_risk, df_rinput):
+
+    medium_non_relapse=[]
+    for i in range(len(input_abn)):
+        if ((df_risk.iloc[i][1] == 'Medium')):
+            if (df_rinput.iloc[i][1] == 'No'):
+                medium_non_relapse .append(input_abn.iloc[i, :])  # assign only high patients
+    medium_non_relapse = pd.DataFrame(medium_non_relapse)
+    data = medium_non_relapse.transpose()
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(8, 8))
+    plt.xlim([0.0, 2.0])
+    sns.distplot(data, bins=100, kde=False,color="black");
+    plt.xlabel('Anomaly score of gene sets', fontsize=16);
+    plt.ylabel('Frequency of anomaly score', fontsize=16);
+    plt.legend()
+    plt.savefig('E:/medium_non_relapse.png', format='png', dpi=1200)
+    plt.show()
+# ---------------------
+#  main
+# ---------------------
+def main():
+    num_of_genesets, geneset_map = load_genesets()
+    index_name, data = load_dataset()
+
+    class_anomalies = Class_anomalies(num_of_genesets, geneset_map)
+    num_of_patients = data.shape[0]
+    anomaly_score = pre_process(class_anomalies, data)
+
+    # print("Anomalies Score:")
+    df_treatment_Treats_input = pd.read_excel(
+        "E:/Treatmetn_Treats_96.xls")
+    df_treatment_protocol_input = pd.read_excel(
+        "E:/Treatmetn_Protocols_96.xls")
+    df_rinput = pd.read_excel("E:/Relapse_96.xls")
+    anomaly_df = pd.DataFrame(anomaly_score)
+    relapse_distribuation(anomaly_df, df_rinput)
+    non_relapse_distribuation(anomaly_df, df_rinput)
+    high_relapse_distribuation(anomaly_df, df_treatment_Treats_input, df_rinput)
+    high_non_relapse_distribuation(anomaly_df, df_treatment_Treats_input, df_rinput)
+    standard_relapse_distribuation(anomaly_df, df_treatment_Treats_input, df_rinput)
+    standard_non_relapse_distribuation(anomaly_df, df_treatment_Treats_input, df_rinput)
+    medium_relapse_distribuation(anomaly_df, df_treatment_Treats_input, df_rinput)
+    medium_non_relapse_distribuation(anomaly_df, df_treatment_Treats_input, df_rinput)
+    print('Done.')
+
+
+main()

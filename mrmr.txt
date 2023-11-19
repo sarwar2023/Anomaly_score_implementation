@@ -1,0 +1,309 @@
+import pandas as pd
+import numpy as np
+from matplotlib.patches import Patch
+from matplotlib.lines import Line2D
+import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
+import math
+
+
+# script constants
+patient_file_name = r'E:/patient_with_class.xls'
+geneset_file_name = r'E:/C6_geneset.xls'
+
+
+def load_genesets():
+    """
+    Load the geneset data and return a dict which maps each gene id to a set of geneset indexes.
+    Geneset indexes range from 0 to the number of genesets - 1.
+    We do not assume that a gene appears in only one geneset.
+    :returns: num_of_genesets, geneset_map.
+    """
+    geneset_df = pd.read_excel(geneset_file_name)
+    geneset_map = {}
+    geneset_name = geneset_df.iloc[:, 0]
+    for geneset_index, row in geneset_df.iterrows():
+        it = iter(row)
+        next(it)  # The first column is the geneset_id which we ignore - just use the index instead
+        for gene_id in it:
+            if isinstance(gene_id, str):
+                try:
+                    geneset_map[gene_id].add(geneset_index)
+                except KeyError:
+                    geneset_map[gene_id] = {geneset_index}
+    # print(geneset_map)
+    return geneset_df.shape[0], geneset_map, geneset_name
+
+
+def load_dataset():
+    """
+    Load the patient gene expression dataset.
+    Rows are patients.
+    Columns are genes (with expression values), except the the last column
+    which is the target attribute
+    :returns: a DataFrame.
+    """
+    # The data is stored in the excel file transposed.
+    patient_data = pd.read_excel(patient_file_name, index_col=0).transpose()
+    index_name = patient_data.index
+    return index_name, patient_data
+
+
+class Class_anomalies(object):
+
+    def __init__(self, num_of_genesets, geneset_map):
+        self.num_of_genesets = num_of_genesets
+        self.geneset_map = geneset_map
+        self.mean = None
+        self.std = None
+
+    def _anomaly_scores(self, train_data, target_values):
+        """
+        Given a DataFrame of expression values, with column names that are gene ids,
+        return a numpy array of anomaly scores.
+        Rows are patients, columns are genesets.
+
+        This assumes 'self.fit' has been called to set 'self.mean' and 'self.std'.
+        """
+
+        self.mean = train_data.mean()
+        self.std = train_data.std()
+        num_patients = train_data.shape[0]
+        z_scores = abs(train_data - self.mean) / self.std
+        gene_ids = train_data.columns
+
+        # Create a matrix of anomaly scores.
+        anomalies = np.zeros((num_patients, self.num_of_genesets), dtype=np.float)
+        for patient_index, (patient, row) in enumerate(z_scores.iterrows()):
+            counts = np.zeros(self.num_of_genesets, dtype=np.int)
+            for gene_id, z_score in zip(gene_ids, row):
+                for geneset_index in self.geneset_map.get(gene_id, ()):
+                    anomalies[patient_index, geneset_index] += z_score
+                    counts[geneset_index] += 1
+
+            for geneset_index in range(self.num_of_genesets):
+                count = counts[geneset_index]
+                if count > 0:
+                    anomalies[patient_index, geneset_index] /= count
+        # anomalies = anomalies - anomalies.mean()
+        # print (gs_list)
+        return anomalies
+
+
+def pre_process(class_anomalies, data):
+    # Create a frame of training data (excluding row i from data)
+    train_data = data
+    # Train our classifier
+    target_values = train_data.iloc[:, -1].values
+    train_data = train_data.drop(train_data.columns[-1], axis=1)
+    anomaly_score = class_anomalies._anomaly_scores(train_data, target_values)
+    return anomaly_score
+
+
+# ---------------------
+#  main
+# ---------------------
+def MRMR(X, geneset):
+    dft = X.transpose()
+    n = dft.shape
+    px = dft.sum(axis=1, skipna=True)
+    py = dft.sum(axis=0, skipna=True)
+    for i in range(n[1]):
+        entr_x_by_y = dft / py[i]
+    row_sum = []
+
+    for i in range(n[0]):
+        s = 0
+        for j in range(n[1]):
+            s = s + dft.iloc[i, j]
+        row_sum.append(s)
+        # entropy(H(x))
+    joint_entp_col = []
+    h_x = 0
+    for i in range(n[0]):
+        e = -(row_sum[i] * math.log(abs(row_sum[i]), 2))
+    h_x += e
+    # entropy(H(x by y))
+    joint_entp_mutual = []
+    for i in range(n[0]):
+        e = 0
+        for j in range(n[1]):
+            p_x_y = entr_x_by_y.iloc[i, j]
+            p = dft.iloc[i, j]
+            if p > 0:
+                e += -(p * math.log(abs(p_x_y), 2))
+        joint_entp_mutual.append(e)
+        # Mutul Information
+    Mi_h_x = h_x - joint_entp_mutual
+    col_sum = []
+
+    for i in range(n[1]):
+        s = 0
+        for j in range(n[0]):
+            s = s + dft.iloc[j, i]
+        col_sum.append(s)
+        # entropy(H(x_S))
+    joint_entp_col = []
+    h_x_s = 0
+    for i in range(n[1]):
+        e = -(col_sum[i] * math.log(abs(col_sum[i]), 2))
+    h_x_s += e
+    Mi_h_x_s = h_x_s - joint_entp_mutual
+    avg_mi_xs = Mi_h_x_s.mean()
+    mrmr = Mi_h_x - avg_mi_xs
+    # geneset=pd.read_excel('E:\mrmr_geneset.xls')
+    mrmr_frame = pd.DataFrame(mrmr)
+    mrmr_frame = mrmr_frame.rename(columns={0: 'MRMR'})
+
+    # mrmr_frame.insert (0, "MRMR_value", mrmr)
+
+    gene_frame = pd.concat([geneset, mrmr_frame], axis=1)
+    # gene_frame=gene_frame.drop(columns='Unnamed: 0')
+    gene_frame.sort_values("MRMR", ascending=False, inplace=True, na_position='last')
+    print("MRMR Output")
+    print(gene_frame.head(5))
+    mrmr_id = gene_frame.index.values
+    GS1 = mrmr_id[0]
+    GS2 = mrmr_id[1]
+    GS3 = mrmr_id[2]
+    GS4 = mrmr_id[3]
+
+    return GS1,GS2,GS3,GS4
+
+
+def High(emb, index_name, GS1, GS2, GS3, GS4, df_treatment_Treats_input, df_treatment_protocol_input, df_rinput):
+    High_patients = 0
+    High = []
+    target = []
+    # plt.legend((red,green,ch,bm,np),('Relapse','Not Relapse','Chemotherapy','BMT','No Plan'))
+    n = len(df_treatment_Treats_input)
+    import matplotlib.pyplot as plt
+    fig,ax=plt.subplots(figsize=(8, 8))
+    from matplotlib.patches import Ellipse
+    ellipse1 = Ellipse((0.55, 0.63),0.1,0.3,fill=False,edgecolor='black')
+    ellipse2 = Ellipse((0.66, 0.68), 0.1, 0.35, fill=False, edgecolor='black')
+    ellipse3 = Ellipse((1.51, 1.42), 0.25, 0.37, fill=False, edgecolor='black')
+    text_kwargs=dict(ha='center',va='center',fontsize=14,color='black')
+    labels = ["ALL10", "ALL11", "ALL123", "ALL13", "ALL75", "ALL106", "ALL107", "ALL115", "ALL119", "ALL128", "ALL144",
+              "ALL287", "ALL390"]
+    j=0
+    for i in range(n):
+        if (df_rinput.iloc[i][1] == 'Yes'):
+            color = 'red'
+            marker='v'
+        # label='Relapse'
+        else:
+            color = 'green'
+            # label='Not Relapse'
+            marker='*'
+        if (df_treatment_Treats_input.iloc[i][1] == 'Very High' or df_treatment_Treats_input.iloc[i][1] == 'High'):
+            marker = marker
+            High_patients += 1
+            High.append(index_name[i])
+            target.append(df_rinput.iloc[i][1])
+        elif (df_treatment_Treats_input.iloc[i][1] == 'Medium' and df_treatment_protocol_input.iloc[i][1] == 'BFM 95'):
+            marker = 'None'
+        elif (df_treatment_Treats_input.iloc[i][1] == 'Medium' and df_treatment_protocol_input.iloc[i][1] == 'Study 8'):
+            marker = 'None'
+        elif (df_treatment_Treats_input.iloc[i][1] == 'Standard'):
+            marker = 'None'
+        else:
+            marker = 'None'
+
+        plt.scatter(emb[GS3][i], emb[GS4][i], color=color, marker=marker,s=400)
+        if (df_treatment_Treats_input.iloc[i][1] == 'Very High' or df_treatment_Treats_input.iloc[i][1] == 'High'):
+            if (df_rinput.iloc[i][1] == 'Yes' or df_rinput.iloc[i][1] == 'No'):
+                j = j + 1;
+                if (j !=10 and j!=13 and j!=2 and j!=3 and j!=1 and j!=11):
+                    plt.annotate(j,  # this is the text
+                                 (emb[GS3][i], emb[GS4][i]),  # this is the point to label
+                                 textcoords="offset points",  # how to position the text
+                                 xytext=(11, 8),  # distance from text to points (x,y)
+                                 ha='center', fontsize=11)
+                elif (j == 10):
+                    plt.annotate(j,  # this is the text
+                                 (emb[GS3][i], emb[GS4][i]),  # this is the point to label
+                                 textcoords="offset points",  # how to position the text
+                                 xytext=(18, -8),  # distance from text to points (x,y)
+                                 ha='center', fontsize=11)
+                elif (j == 13):
+                    plt.annotate(j,  # this is the text
+                                 (emb[GS3][i], emb[GS4][i]),  # this is the point to label
+                                 textcoords="offset points",  # how to position the text
+                                 xytext=(13, -8),  # distance from text to points (x,y)
+                                 ha='center', fontsize=11)
+                elif (j == 2):
+                    plt.annotate(j,  # this is the text
+                                 (emb[GS3][i], emb[GS4][i]),  # this is the point to label
+                                 textcoords="offset points",  # how to position the text
+                                 xytext=(-8, 11),  # distance from text to points (x,y)
+                                 ha='center', fontsize=11)
+                elif (j == 3):
+                    plt.annotate(j,  # this is the text
+                                 (emb[GS3][i], emb[GS4][i]),  # this is the point to label
+                                 textcoords="offset points",  # how to position the text
+                                 xytext=(-10, -3),  # distance from text to points (x,y)
+                                 ha='center', fontsize=11)
+                elif (j == 1):
+                    plt.annotate(j,  # this is the text
+                                 (emb[GS3][i], emb[GS4][i]),  # this is the point to label
+                                 textcoords="offset points",  # how to position the text
+                                 xytext=(13, 8.5),  # distance from text to points (x,y)
+                                 ha='center', fontsize=11)
+                elif (j == 11):
+                    plt.annotate(j,  # this is the text
+                                 (emb[GS3][i], emb[GS4][i]),  # this is the point to label
+                                 textcoords="offset points",  # how to position the text
+                                 xytext=(15, 9),  # distance from text to points (x,y)
+                                 ha='center', fontsize=11)
+        #plt.gca().add_artist(ellipse1)
+        plt.text(0.52,0.80,'Cluster A',**text_kwargs)
+        #plt.gca().add_artist(ellipse2)
+        plt.text(0.83,0.64, 'Cluster B', **text_kwargs)
+        #plt.gca().add_artist(ellipse3)
+        plt.text(1.38, 1.26, 'Cluster C', **text_kwargs)
+
+    #plt.title('*  Relapse and  V  non-relapse',fontsize='16');
+    plt.xlabel('SRC_UP',fontsize='20');
+    plt.ylabel('ATF2_S_UP',fontsize='20');
+    legend_elements = [Line2D([0], [0], color='green', marker='*', linestyle='None',
+                              markersize=16, label='No_Relapse'),
+                       Line2D([0], [0], color='red', marker='v', linestyle='None',
+                              markersize=16, label='Relapse')]
+    plt.legend(handles=legend_elements, loc='upper center', bbox_to_anchor=(0.15, 1.14), borderpad=0.1, labelspacing=0.5,fontsize=15)
+    High1 = pd.DataFrame(target, index=High)
+    High1 = High1.rename(columns={0: "Target"})
+    plt.savefig('E:/MRMR.png',format='png',dpi=600)
+    plt.show()
+    print(High1)
+
+# ---------------------
+#  main
+# ---------------------
+def main():
+    num_of_genesets, geneset_map, geneset_name = load_genesets()
+    index_name,data = load_dataset()
+
+    class_anomalies = Class_anomalies(num_of_genesets, geneset_map)
+    num_of_patients = data.shape[0]
+    anomaly_score = pre_process(class_anomalies, data)
+
+    # print("Anomalies Score:")
+    # anomaly_df = pd.DataFrame(np.transpose(anomaly_score)) # for save file with geneset
+    anomaly_df = pd.DataFrame(anomaly_score)
+    df_treatment_Treats_input = pd.read_excel(
+        "E:/Treatmetn_Treats_96.xls")
+    df_treatment_protocol_input = pd.read_excel(
+        "E:/Treatmetn_Protocols_96.xls")
+    df_rinput = pd.read_excel("E://Relapse_96.xls")
+    # emb=pca(anomaly_df)
+    geneset_dataframe = pd.DataFrame(geneset_name)
+    GS1, GS2, GS3, GS4=MRMR(anomaly_df,geneset_dataframe)
+    #Medium_Study8(emb_3d, index_name, GS1, GS2, GS3, GS4, df_treatment_Treats_input, df_treatment_protocol_input,df_rinput)
+    High(anomaly_df, index_name, GS1, GS2, GS3, GS4, df_treatment_Treats_input, df_treatment_protocol_input, df_rinput)
+    #BMF95(emb_3d, index_name, GS1, GS2, GS3, GS4, df_treatment_Treats_input, df_treatment_protocol_input,df_rinput)
+    #Standard(emb_3d, index_name, GS1, GS2, GS3, GS4,df_treatment_Treats_input, df_treatment_protocol_input, df_rinput)
+    #Other(emb_3d, index_name, GS1, GS2, GS3, GS4, df_treatment_Treats_input, df_treatment_protocol_input,df_rinput)
+    print('Done.')
+main()
+

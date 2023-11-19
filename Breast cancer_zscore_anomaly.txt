@@ -1,0 +1,183 @@
+import pandas as pd
+import numpy as np
+# %matplotlib notebook
+from matplotlib.patches import Patch
+from matplotlib.lines import Line2D
+import matplotlib.patches as mpatches
+
+# script constants
+patient_file_name = r'E:/Patient_data_breast_cancer_with_class.xls'
+geneset_file_name = r'E:/C5_MF_geneset.xls'
+
+
+def load_genesets():
+    """
+    Load the geneset data and return a dict which maps each gene id to a set of geneset indexes.
+    Geneset indexes range from 0 to the number of genesets - 1.
+    We do not assume that a gene appears in only one geneset.
+    :returns: num_of_genesets, geneset_map.
+    """
+    geneset_df = pd.read_excel(geneset_file_name)
+    geneset_map = {}
+    for geneset_index, row in geneset_df.iterrows():
+        it = iter(row)
+        next(it)  # The first column is the geneset_id which we ignore - just use the index instead
+        for gene_id in it:
+            if isinstance(gene_id, str):
+                try:
+                    geneset_map[gene_id].add(geneset_index)
+                except KeyError:
+                    geneset_map[gene_id] = {geneset_index}
+    return geneset_df.shape[0], geneset_map
+
+
+def load_dataset():
+    """
+    Load the patient gene expression dataset.
+    Rows are patients.
+    Columns are genes (with expression values), except the the last column
+    which is the target attribute
+    :returns: a DataFrame.
+    """
+    # The data is stored in the excel file transposed.
+    patient_data = pd.read_excel(patient_file_name, index_col=0).transpose()
+    index_name = patient_data.index
+    return index_name, patient_data
+
+
+class Class_anomalies(object):
+
+    def __init__(self, num_of_genesets, geneset_map):
+        self.num_of_genesets = num_of_genesets
+        self.geneset_map = geneset_map
+        self.mean = None
+        self.std = None
+
+    def _anomaly_scores(self, train_data, target_values):
+        """
+        Given a DataFrame of expression values, with column names that are gene ids,
+        return a numpy array of anomaly scores.
+        Rows are patients, columns are genesets.
+
+        This assumes 'self.fit' has been called to set 'self.mean' and 'self.std'.
+        """
+        self.mean = train_data.mean()
+        self.std = train_data.std()
+        num_patients = train_data.shape[0]
+        z_scores = (abs(train_data - self.mean) / self.std)
+        gene_ids = train_data.columns
+
+        # Create a matrix of anomaly scores.
+        anomalies = np.zeros((num_patients, self.num_of_genesets), dtype=np.float)
+        for patient_index, (patient, row) in enumerate(z_scores.iterrows()):
+            counts = np.zeros(self.num_of_genesets, dtype=np.int)
+            for gene_id, z_score in zip(gene_ids, row):
+                for geneset_index in self.geneset_map.get(gene_id, ()):
+                    anomalies[patient_index, geneset_index] += z_score
+                    counts[geneset_index] += 1
+            for geneset_index in range(self.num_of_genesets):
+                count = counts[geneset_index]
+                if count > 0:
+                    anomalies[patient_index, geneset_index] /= count
+
+        #anomalies = (anomalies - anomalies.mean())
+        return anomalies
+
+
+def pre_process(class_anomalies, data):
+    # Create a frame of training data (excluding row i from data)
+    train_data = data
+    # Train our classifier
+    target_values = train_data.iloc[:, -1].values
+    train_data = train_data.drop(train_data.columns[-1], axis=1)
+    anomaly_score = class_anomalies._anomaly_scores(train_data, target_values)
+    return anomaly_score
+
+
+def pca(df_input):
+    dft = df_input.transpose()
+    # dft
+    # Calculating the mean of abnormality scores for each patient
+    # then subtracting the mean from the abnormality scores to create 'centred' data for PCA.
+    # Store result in dfm
+    l = np.shape(df_input)  # (num of genesets, num of patients)
+    dfm = df_input
+    for i in range(l[1]):
+        mean = df_input.iloc[:, i].mean()
+        dfm.iloc[:, i] -= mean
+        # Transpose the centred data. rows are patients, cols are genesets. Stored in dfmt.
+    dfmt = dfm.transpose()
+    # dfmt
+    # Calculating the covariance. Cov is a building function of Python. Its parameter is the subtractedMean
+    co1 = np.cov(dfmt)
+    # print(co1)
+    np.shape(co1)
+    # Calculating the Eigenvalues and Eigenvectors using building function Eig()
+    eigen_vals, eigen_vecs = np.linalg.eig(co1)
+
+    # Calculating the Total Eigenvalues
+    tot = float(sum(eigen_vals))
+    # Calculating the Varienced Eigenvalues
+    var_exp = [(float(i) / tot) * 100 for i in eigen_vals]
+    cum_var_exp = np.cumsum(var_exp)
+
+    # Make a list of (eigenvalue, eigenvector) tuples
+    eigen_pairs = [(np.abs(eigen_vals[i]), eigen_vecs[:, i]) for i in range(len(eigen_vals))]
+
+    eigen_pairs.sort(key=lambda k: k[0], reverse=True)
+    w = np.hstack((eigen_pairs[0][1][:, np.newaxis], eigen_pairs[1][1][:, np.newaxis]))
+    emb = df_input.dot(w)
+    return emb
+
+
+def plotting(emb, index_name, df_rinput):
+    High_patients = 0
+    High = []
+    target = []
+    # plt.legend((red,green,ch,bm,np),('Relapse','Not Relapse','Chemotherapy','BMT','No Plan'))
+    n = len(df_rinput)
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(8, 8))
+
+    for i in range(n):
+        if (df_rinput.iloc[i][1] == 1):
+            color = 'r'
+        # label='cancer'
+        else:
+            color = 'g'
+            # label='Non cancer'
+
+
+        plt.scatter(emb[0][i], emb[1][i], color=color, marker='*',s=150)
+    plt.xlabel('PCA1', fontsize='20');
+    plt.ylabel('PCA2', fontsize='20');
+    legend_elements = [Line2D([0], [0], color='green', marker='*', linestyle='None',
+                              markersize=16, label='normal'),
+                       Line2D([0], [0], color='red', marker='*', linestyle='None',
+                              markersize=16, label='cancer')]
+    plt.legend(handles=legend_elements, loc='upper center', bbox_to_anchor=(0.11, 1.14), borderpad=0.1,
+               labelspacing=0.5, fontsize=15)
+    plt.savefig('E:/Breast_PCA_Zscore.eps',format='eps',dpi=1200)
+    plt.show()
+
+
+# ---------------------
+#  main
+# ---------------------
+def main():
+    num_of_genesets, geneset_map = load_genesets()
+    index_name, data = load_dataset()
+
+    class_anomalies = Class_anomalies(num_of_genesets, geneset_map)
+    num_of_patients = data.shape[0]
+    anomaly_score = pre_process(class_anomalies, data)
+
+    # print("Anomalies Score:")
+    anomaly_df = pd.DataFrame(anomaly_score)
+    df_rinput = pd.read_excel("E:/Breast_cancer_status.xls")
+    emb = pca(anomaly_df)
+    plotting(emb, index_name,df_rinput)
+    print('Done.')
+
+
+main()

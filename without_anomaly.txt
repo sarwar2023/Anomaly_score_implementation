@@ -1,0 +1,431 @@
+import pandas as pd
+import numpy as np
+# %matplotlib notebook
+from matplotlib.patches import Patch
+from matplotlib.lines import Line2D
+import matplotlib.patches as mpatches
+
+# script constants
+patient_file_name = r'E:/patient_with_class.xls'
+geneset_file_name = r'E:/C5_MF_geneset.xls'
+
+def load_genesets():
+    """
+    Load the geneset data and return a dict which maps each gene id to a set of geneset indexes.
+    Geneset indexes range from 0 to the number of genesets - 1.
+    We do not assume that a gene appears in only one geneset.
+    :returns: num_of_genesets, geneset_map.
+    """
+    geneset_df = pd.read_excel(geneset_file_name)
+    geneset_map = {}
+    for geneset_index, row in geneset_df.iterrows():
+        it = iter(row)
+        next(it)  # The first column is the geneset_id which we ignore - just use the index instead
+        for gene_id in it:
+            if isinstance(gene_id, str):
+                try:
+                    geneset_map[gene_id].add(geneset_index)
+                except KeyError:
+                    geneset_map[gene_id] = {geneset_index}
+    return geneset_df.shape[0], geneset_map
+
+
+def load_dataset():
+    """
+    Load the patient gene expression dataset.
+    Rows are patients.
+    Columns are genes (with expression values), except the the last column
+    which is the target attribute
+    :returns: a DataFrame.
+    """
+    # The data is stored in the excel file transposed.
+    patient_data = pd.read_excel(patient_file_name, index_col=0).transpose()
+    index_name = patient_data.index
+    return index_name, patient_data
+
+
+class Class_anomalies(object):
+
+    def __init__(self, num_of_genesets, geneset_map):
+        self.num_of_genesets = num_of_genesets
+        self.geneset_map = geneset_map
+        self.mean = None
+        self.std = None
+
+    def _anomaly_scores(self, train_data, target_values):
+        """
+        Given a DataFrame of expression values, with column names that are gene ids,
+        return a numpy array of anomaly scores.
+        Rows are patients, columns are genesets.
+
+        This assumes 'self.fit' has been called to set 'self.mean' and 'self.std'.
+        """
+        self.mean = train_data.mean()
+        self.std = train_data.std()
+        num_patients = train_data.shape[0]
+        z_scores = abs(train_data )
+        gene_ids = train_data.columns
+
+        # Create a matrix of anomaly scores.
+        anomalies = np.zeros((num_patients, self.num_of_genesets), dtype=np.float)
+        for patient_index, (patient, row) in enumerate(z_scores.iterrows()):
+            counts = np.zeros(self.num_of_genesets, dtype=np.int)
+            for gene_id, z_score in zip(gene_ids, row):
+                for geneset_index in self.geneset_map.get(gene_id, ()):
+                    anomalies[patient_index, geneset_index] += z_score
+                    counts[geneset_index] += 1
+            for geneset_index in range(self.num_of_genesets):
+                count = counts[geneset_index]
+                if count > 0:
+                    anomalies[patient_index, geneset_index] /= count
+        anomalies = (anomalies - anomalies.mean())
+        return anomalies
+
+
+def pre_process(class_anomalies, data):
+    # Create a frame of training data (excluding row i from data)
+    train_data = data
+    # Train our classifier
+    target_values = train_data.iloc[:, -1].values
+    train_data = train_data.drop(train_data.columns[-1], axis=1)
+    anomaly_score = class_anomalies._anomaly_scores(train_data, target_values)
+    return anomaly_score
+
+
+def pca(df_input):
+    dft = df_input.transpose()
+    # dft
+    # Calculating the mean of abnormality scores for each patient
+    # then subtracting the mean from the abnormality scores to create 'centred' data for PCA.
+    # Store result in dfm
+    l = np.shape(df_input)  # (num of genesets, num of patients)
+    dfm = df_input
+    for i in range(l[1]):
+        mean = df_input.iloc[:, i].mean()
+        dfm.iloc[:, i] -= mean
+        # Transpose the centred data. rows are patients, cols are genesets. Stored in dfmt.
+    dfmt = dfm.transpose()
+    # dfmt
+    # Calculating the covariance. Cov is a building function of Python. Its parameter is the subtractedMean
+    co1 = np.cov(dfmt)
+    # print(co1)
+    np.shape(co1)
+    # Calculating the Eigenvalues and Eigenvectors using building function Eig()
+    eigen_vals, eigen_vecs = np.linalg.eig(co1)
+
+    # Calculating the Total Eigenvalues
+    tot = float(sum(eigen_vals))
+    # Calculating the Varienced Eigenvalues
+    var_exp = [(float(i) / tot) * 100 for i in eigen_vals]
+    cum_var_exp = np.cumsum(var_exp)
+
+    # Make a list of (eigenvalue, eigenvector) tuples
+    eigen_pairs = [(np.abs(eigen_vals[i]), eigen_vecs[:, i]) for i in range(len(eigen_vals))]
+
+    eigen_pairs.sort(key=lambda k: k[0], reverse=True)
+    w = np.hstack((eigen_pairs[0][1][:, np.newaxis], eigen_pairs[1][1][:, np.newaxis]))
+    emb = df_input.dot(w)
+    return emb
+
+
+def Medium_Study8(emb, index_name, df_treatment_Treats_input, df_treatment_protocol_input, df_rinput):
+    Medimum_BFM95 = 0
+    Medimum_Study8 = 0
+    Total = 0
+    Medium_Study8 = []
+    target = []
+    # plt.legend((red,green,ch,bm,np),('Relapse','Not Relapse','Chemotherapy','BMT','No Plan'))
+    n = len(df_treatment_Treats_input)
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(8, 8))
+    for i in range(n):
+        if (df_rinput.iloc[i][1] == 'Yes'):
+            color = 'r'
+        # label='Relapse'
+        else:
+            color = 'g'
+            # label='Not Relapse'
+
+        if (df_treatment_Treats_input.iloc[i][1] == 'Very High' and df_treatment_Treats_input.iloc[i][1] == 'High'):
+            marker = 'None'
+
+        elif (df_treatment_Treats_input.iloc[i][1] == 'Medium' and df_treatment_protocol_input.iloc[i][1] == 'BFM 95'):
+            marker = 'None'
+            Medimum_BFM95 += 1
+        elif (df_treatment_Treats_input.iloc[i][1] == 'Medium' and df_treatment_protocol_input.iloc[i][1] == 'Study 8'):
+            if(df_rinput.iloc[i][1] == 'Yes'):
+                plt.annotate(index_name[i],  # this is the text
+                             (emb[0][i], emb[1][i]),  # this is the point to label
+                             textcoords="offset points",  # how to position the text
+                             xytext=(0, 2),  # distance from text to points (x,y)
+                             ha='center', fontsize=6)
+            marker = '^'
+            Medimum_Study8 += 1
+            Medium_Study8.append(index_name[i])
+            target.append(df_rinput.iloc[i][1])
+        elif (df_treatment_Treats_input.iloc[i][1] == 'Standard'):
+            marker = 'None'
+        else:
+            marker = 'None'
+
+            # print(Total)
+        # Total=Medimum_Study8+Medimum_BFM95
+        plt.scatter(emb[0][i], emb[1][i], color=color, marker=marker)
+    plt.title('Risk Start Medium Study 8 using Z-Square Abnormality');
+    plt.xlabel('PCA1');
+    plt.ylabel('PCA2');
+    legend_elements = [Line2D([0], [0], color='green', marker='^', linestyle='None',
+                              markersize=5, label='Medium_Study8&No_Relapse'),
+                       Line2D([0], [0], color='red', marker='^', linestyle='None',
+                              markersize=5, label='Medium_Study8&Relapse')]
+    plt.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(0.7, 1), borderpad=0.1, labelspacing=0.8)
+    Medium_8 = pd.DataFrame(target, index=Medium_Study8)
+    Medium_8 = Medium_8.rename(columns={0: "Target"})
+    print(Medium_8)
+    plt.savefig('C:/figure/Medium_Study8_PCA_Zscore.eps',format='eps',dpi=1200)
+
+# Treatment planning
+def BMF95(emb, index_name, df_treatment_Treats_input, df_treatment_protocol_input, df_rinput):
+    Medium_BFM95 = []
+    target = []
+    n = len(df_treatment_Treats_input)
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(8, 8))
+    for i in range(n):
+        if (df_rinput.iloc[i][1] == 'Yes'):
+            color = 'r'
+        # label='Relapse'
+        else:
+            color = 'g'
+            # label='Not Relapse'
+
+        if (df_treatment_Treats_input.iloc[i][1] == 'Very High' and df_treatment_Treats_input.iloc[i][1] == 'High'):
+            marker = 'None'
+
+        elif (df_treatment_Treats_input.iloc[i][1] == 'Medium' and df_treatment_protocol_input.iloc[i][1] == 'BFM 95'):
+            if(df_rinput.iloc[i][1] == 'Yes'):
+                plt.annotate(index_name[i],  # this is the text
+                (emb[0][i], emb[1][i]),  # this is the point to label
+                textcoords="offset points",  # how to position the text
+                xytext=(0, 2),  # distance from text to points (x,y)
+                ha='center', fontsize=6)
+            marker = '*'
+            Medium_BFM95.append(index_name[i])
+            target.append(df_rinput.iloc[i][1])
+        elif (df_treatment_Treats_input.iloc[i][1] == 'Medium' and df_treatment_protocol_input.iloc[i][1] == 'Study 8'):
+            marker = 'None'
+        elif (df_treatment_Treats_input.iloc[i][1] == 'Standard'):
+            marker = 'None'
+        else:
+            marker = 'None'
+
+        plt.scatter(emb[0][i], emb[1][i], color=color, marker=marker)
+    plt.title('Risk Start BFM 95 Using Z-Square Abnormality', fontsize=16);
+    plt.xlabel('PCA1', fontsize=16);
+    plt.ylabel('PCA2', fontsize=16);
+    legend_elements = [Line2D([0], [0], color='green', marker='*', linestyle='None',
+                              markersize=5, label='Medium_BFM95&No_Relapse'),
+                       Line2D([0], [0], color='red', marker='*', linestyle='None',
+                              markersize=5, label='Medium_BFM95&Relapse')]
+    plt.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(0.6, 1), borderpad=0.1, labelspacing=0.5)
+    Medium_95 = pd.DataFrame(target, index=Medium_BFM95)
+    Medium_95 = Medium_95.rename(columns={0: "Target"})
+    print(Medium_95)
+    plt.savefig('C:/figure/Medium_BFM95_Zscore.eps', format='eps', dpi=1200)
+    plt.show()
+
+
+def Standard(emb, index_name, df_treatment_Treats_input, df_treatment_protocol_input, df_rinput):
+    Strandard = []
+    target = []
+    Strandard_patients = 0
+    # plt.legend((red,green,ch,bm,np),('Relapse','Not Relapse','Chemotherapy','BMT','No Plan'))
+    n = len(df_treatment_Treats_input)
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(8, 8))
+    for i in range(n):
+        if (df_rinput.iloc[i][1] == 'Yes'):
+            color = 'r'
+        # label='Relapse'
+        else:
+            color = 'g'
+            # label='Not Relapse'
+
+        if (df_treatment_Treats_input.iloc[i][1] == 'Very High' and df_treatment_Treats_input.iloc[i][1] == 'High'):
+            marker = 'None'
+
+        elif (df_treatment_Treats_input.iloc[i][1] == 'Medium' and df_treatment_protocol_input.iloc[i][1] == 'BFM 95'):
+            marker = 'None'
+        elif (df_treatment_Treats_input.iloc[i][1] == 'Medium' and df_treatment_protocol_input.iloc[i][1] == 'Study 8'):
+            marker = 'None'
+        elif (df_treatment_Treats_input.iloc[i][1] == 'Standard'):
+            if (df_rinput.iloc[i][1] == 'Yes'):
+                plt.annotate(index_name[i],  # this is the text
+                             (emb[0][i], emb[1][i]),  # this is the point to label
+                             textcoords="offset points",  # how to position the text
+                             xytext=(0, 2),  # distance from text to points (x,y)
+                             ha='center', fontsize=6)
+            marker = 'o'
+            Strandard_patients += 1
+            Strandard.append(index_name[i])
+            target.append(df_rinput.iloc[i][1])
+        else:
+            marker = 'None'
+
+        plt.scatter(emb[0][i], emb[1][i], color=color, marker=marker)
+
+    plt.title('Risk Start Standard Using Z-Square Abnormality', fontsize=16);
+    plt.xlabel('PCA1', fontsize=16);
+    plt.ylabel('PCA2', fontsize=16);
+    legend_elements = [Line2D([0], [0], color='green', marker='o', linestyle='None',
+                              markersize=5, label='Standard&No_Relapse'),
+                       Line2D([0], [0], color='red', marker='o', linestyle='None',
+                              markersize=5, label='Standard&Relapse')]
+    plt.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(0.6, 1), borderpad=0.1, labelspacing=0.5)
+    Strandard1 = pd.DataFrame(target, index=Strandard)
+    Strandard1 = Strandard1.rename(columns={0: "Target"})
+    print(Strandard1)
+    plt.savefig('C:/figure/Standard_PCA_Zscore.eps', format='eps', dpi=1200)
+    plt.show()
+
+def High(emb, index_name, df_treatment_Treats_input, df_treatment_protocol_input, df_rinput):
+    High_patients = 0
+    High = []
+    target = []
+    # plt.legend((red,green,ch,bm,np),('Relapse','Not Relapse','Chemotherapy','BMT','No Plan'))
+    n = len(df_treatment_Treats_input)
+    import matplotlib.pyplot as plt
+    fig,ax=plt.subplots(figsize=(8, 8))
+    from matplotlib.patches import Ellipse
+    ellipse1 = Ellipse((-27.5, 0),6,2,fill=False,edgecolor='black')
+    ellipse2 = Ellipse((6.2, -3.4), 9, 2.1, fill=False, edgecolor='black')
+    ellipse3 = Ellipse((7, 2), 6.4,1.4, fill=False, edgecolor='black')
+    text_kwargs=dict(ha='center',va='center',fontsize=14,color='black')
+    labels = ["ALL10", "ALL11", "ALL123", "ALL13", "ALL75", "ALL106", "ALL107", "ALL115", "ALL119", "ALL128", "ALL144",
+              "ALL287", "ALL390"]
+    j=0;
+    for i in range(n):
+        if (df_rinput.iloc[i][1] == 'Yes'):
+            color = 'red'
+            marker='v'
+        # label='Relapse'
+        else:
+            color = 'green'
+            # label='Not Relapse'
+            marker='*'
+        if (df_treatment_Treats_input.iloc[i][1] == 'Very High' or df_treatment_Treats_input.iloc[i][1] == 'High'):
+            marker = marker
+            High_patients += 1
+            High.append(index_name[i])
+            target.append(df_rinput.iloc[i][1])
+        elif (df_treatment_Treats_input.iloc[i][1] == 'Medium' and df_treatment_protocol_input.iloc[i][1] == 'BFM 95'):
+            marker = 'None'
+        elif (df_treatment_Treats_input.iloc[i][1] == 'Medium' and df_treatment_protocol_input.iloc[i][1] == 'Study 8'):
+            marker = 'None'
+        elif (df_treatment_Treats_input.iloc[i][1] == 'Standard'):
+            marker = 'None'
+        else:
+            marker = 'None'
+
+        plt.scatter(emb[0][i], emb[1][i], color=color, marker=marker,s=400)
+        if (df_treatment_Treats_input.iloc[i][1] == 'Very High' or df_treatment_Treats_input.iloc[i][1] == 'High'):
+            if(df_rinput.iloc[i][1] == 'Yes' or df_rinput.iloc[i][1] == 'No'):
+                j=j+1;
+                if(j!=3 and j!=4 and j!=11 and j!=1 and j!=10 and j!=8):
+                    plt.annotate(j,  # this is the text
+                         (emb[0][i], emb[1][i]),  # this is the point to label
+                         textcoords="offset points",  # how to position the text
+                         xytext=(4, 12),  # distance from text to points (x,y)
+                         ha='center', fontsize=11)
+
+                elif (j == 8):
+                    plt.annotate(j,  # this is the text
+                                 (emb[0][i], emb[1][i]),  # this is the point to label
+                                 textcoords="offset points",  # how to position the text
+                                 xytext=(12, 8),  # distance from text to points (x,y)
+                                 ha='center', fontsize=11)
+                elif (j == 10):
+                    plt.annotate(j,  # this is the text
+                                 (emb[0][i], emb[1][i]),  # this is the point to label
+                                 textcoords="offset points",  # how to position the text
+                                 xytext=(12, 6),  # distance from text to points (x,y)
+                                 ha='center', fontsize=11)
+                elif(j==3):
+                    plt.annotate(j,  # this is the text
+                                 (emb[0][i], emb[1][i]),  # this is the point to label
+                                 textcoords="offset points",  # how to position the text
+                                 xytext=(9, 12),  # distance from text to points (x,y)
+                                 ha='center', fontsize=11)
+                elif (j == 1):
+                    plt.annotate(j,  # this is the text
+                                 (emb[0][i], emb[1][i]),  # this is the point to label
+                                 textcoords="offset points",  # how to position the text
+                                 xytext=(0, 12),  # distance from text to points (x,y)
+                                 ha='center', fontsize=11)
+                elif (j == 4):
+                    plt.annotate(j,  # this is the text
+                                 (emb[0][i], emb[1][i]),  # this is the point to label
+                                 textcoords="offset points",  # how to position the text
+                                 xytext=(-3, 12),  # distance from text to points (x,y)
+                                 ha='center', fontsize=11)
+                elif (j == 11):
+                    plt.annotate(j,  # this is the text
+                                 (emb[0][i], emb[1][i]),  # this is the point to label
+                                 textcoords="offset points",  # how to position the text
+                                 xytext=(11, 12),  # distance from text to points (x,y)
+                                 ha='center', fontsize=11)
+
+
+        #plt.gca().add_artist(ellipse1)
+        plt.text(-28,-1.2,'Cluster A',**text_kwargs)
+        #plt.gca().add_artist(ellipse2)
+        plt.text(7.0,-2.2, 'Cluster B', **text_kwargs)
+        #plt.gca().add_artist(ellipse3)
+        plt.text(7.5, 1.3, 'Cluster C', **text_kwargs)
+    #plt.title('*  Relapse and  V  non-relapse',fontsize='16');
+    plt.xlabel('PCA1',fontsize='20');
+    plt.ylabel('PCA2',fontsize='20');
+    legend_elements = [Line2D([0], [0], color='green', marker='*', linestyle='None',
+                              markersize=16, label='No_Relapse'),
+                       Line2D([0], [0], color='red', marker='v', linestyle='None',
+                              markersize=16, label='Relapse')]
+    plt.legend(handles=legend_elements, loc='upper center', bbox_to_anchor=(0.15, 1.14), borderpad=0.1, labelspacing=0.5,fontsize=15)
+    High1 = pd.DataFrame(target, index=High)
+    High1 = High1.rename(columns={0: "Target"})
+
+    plt.savefig('E:/without_anomaly.png', format='png', dpi=600)
+    plt.show()
+    print(High1)
+
+
+
+
+# ---------------------
+#  main
+# ---------------------
+def main():
+    num_of_genesets, geneset_map = load_genesets()
+    index_name, data = load_dataset()
+
+    class_anomalies = Class_anomalies(num_of_genesets, geneset_map)
+    num_of_patients = data.shape[0]
+    anomaly_score = pre_process(class_anomalies, data)
+
+    # print("Anomalies Score:")
+    anomaly_df = pd.DataFrame(anomaly_score)
+    df_treatment_Treats_input = pd.read_excel(
+        "E:/Treatmetn_Treats_96.xls")
+    df_treatment_protocol_input = pd.read_excel(
+        "E:/Treatmetn_Protocols_96.xls")
+    df_rinput = pd.read_excel("E://Relapse_96.xls")
+    emb = pca(anomaly_df)
+    #Medium_Study8(emb,index_name,df_treatment_Treats_input,df_treatment_protocol_input,df_rinput)
+    #BMF95(emb,index_name,df_treatment_Treats_input,df_treatment_protocol_input,df_rinput)
+    #Standard(emb,index_name,df_treatment_Treats_input,df_treatment_protocol_input,df_rinput)
+    High(anomaly_df, index_name, df_treatment_Treats_input, df_treatment_protocol_input, df_rinput)
+    #Other(emb,index_name,df_treatment_Treats_input,df_treatment_protocol_input,df_rinput)
+    # print(anomaly_score)
+    print('Done.')
+
+
+main()
